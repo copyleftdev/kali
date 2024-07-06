@@ -25,6 +25,9 @@ pub struct Config {
     #[arg(short = 'P', long)]
     pub payload: String,
 
+    #[arg(short, long, default_value_t = 50)]
+    pub jitter: u64,
+
     #[arg(short, long, action = clap::ArgAction::Help)]
     pub help: Option<bool>,
 }
