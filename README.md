@@ -1,9 +1,5 @@
-
-
 # Kali
-
-
-![Kali Logo](./logo.png)
+![Kali](logo.png)
 
 Kali is a high-concurrency TCP load testing tool designed to generate a customizable number of requests per second (RPS) to a specified TCP server, while collecting performance metrics and outputting the results in a JSON report. The tool is highly configurable, allowing users to specify various parameters such as host, port, duration, payload, and jitter.
 
@@ -23,48 +19,55 @@ Kali achieves the desired RPS by:
 The project is organized into several modules, each responsible for a specific aspect of the tool's functionality. Here's an overview of the modules:
 
 ```
-src/
-├── main.rs         # Entry point of the application
-├── config.rs       # Configuration parsing and management
-├── metrics.rs      # Data structures for metrics collection
-├── load_testers/   # Load testing implementations
-│   ├── mod.rs      # Module declarations
-│   └── tcp.rs      # TCP load testing implementation
-├── reports/        # Reporting implementations
-│   ├── mod.rs      # Module declarations
-│   └── json.rs     # JSON report generation
-Cargo.toml          # Project dependencies and metadata
+my_project/
+├── src/
+│   ├── lib.rs         # Library entry point
+│   ├── main.rs        # Entry point of the application
+│   ├── config.rs      # Configuration parsing and management
+│   ├── metrics.rs     # Data structures for metrics collection
+│   ├── load_testers/  # Load testing implementations
+│   │   ├── mod.rs     # Module declarations
+│   │   └── tcp.rs     # TCP load testing implementation
+│   └── reports/       # Reporting implementations
+│       ├── mod.rs     # Module declarations
+│       └── json.rs    # JSON report generation
+├── tests/
+│   ├── integration_test.rs # Integration tests
+├── Cargo.toml         # Project dependencies and metadata
 ```
 
 ### Detailed Module Descriptions
 
-1. **main.rs**
+1. **src/lib.rs**
+   - Library entry point re-exporting all modules.
+
+2. **src/main.rs**
    - The entry point of the application.
    - Parses command-line arguments and initializes the configuration.
    - Invokes the load testing and report generation functions.
 
-2. **config.rs**
+3. **src/config.rs**
    - Defines the `Config` struct to hold configuration parameters.
    - Uses the `clap` crate to parse command-line arguments and populate the `Config` struct.
 
-3. **metrics.rs**
+4. **src/metrics.rs**
    - Defines data structures (`RequestMetrics` and `LoadTestReport`) for collecting and serializing performance metrics.
    - Metrics include response time, success status, and timestamps.
 
-4. **load_testers/mod.rs**
+5. **src/load_testers/mod.rs**
    - Module declaration for load testers.
    - Provides an interface for different types of load testers.
 
-5. **load_testers/tcp.rs**
+6. **src/load_testers/tcp.rs**
    - Implements TCP load testing.
    - Manages the concurrency and timing of requests to achieve the desired RPS.
    - Collects performance metrics for each request.
 
-6. **reports/mod.rs**
+7. **src/reports/mod.rs**
    - Module declaration for report generation.
    - Provides an interface for different types of reports.
 
-7. **reports/json.rs**
+8. **src/reports/json.rs**
    - Implements JSON report generation.
    - Serializes the collected metrics into a JSON format and writes to the specified output file.
 
@@ -84,7 +87,15 @@ Cargo.toml          # Project dependencies and metadata
 ### Example Command
 
 ```bash
-cargo run -- --host 127.0.0.1 --port 8080 --duration 10 --rps 100 --load-test-type tcp --output-file output.json --payload "Hello World" --jitter 100
+cargo run -- --host 192.168.0.109 --port 8080 --duration 10 --rps 100 --load-test-type tcp --output-file output.json --payload "Hello World" --jitter 100
+```
+
+## Running Tests
+
+To run the unit tests and integration tests, use the following command:
+
+```bash
+cargo test
 ```
 
 ## Contributing
@@ -108,6 +119,8 @@ To add a new report format:
 - **Modular Design**: Ensure each new feature or component is added as a separate module to maintain the modularity of the codebase.
 - **Clear Interfaces**: Define clear interfaces for new load testers and report formats to ensure they can be easily integrated with the existing codebase.
 - **Documentation**: Document new modules and features thoroughly to help future contributors understand the code and make further enhancements.
+- **Testing**: Ensure that any new code or features added are accompanied by unit and/or integration tests. This ensures that the codebase remains reliable and maintainable.
+
 ---
 
 Kali is a powerful tool for load testing TCP servers, designed with flexibility and performance in mind. We welcome contributions and feedback from the community to make Kali even more robust and versatile.
