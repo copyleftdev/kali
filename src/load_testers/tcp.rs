@@ -27,10 +27,16 @@ pub fn perform_load_test(config: &Config) -> LoadTestReport {
                 let start_time = Instant::now();
                 let success = match TcpStream::connect((&host as &str, port)) {
                     Ok(mut stream) => {
-                        stream.write_all(payload.as_bytes()).unwrap();
-                        let mut buffer = [0; 1024];
-                        let _ = stream.read(&mut buffer).unwrap();
-                        true
+                        if stream.write_all(payload.as_bytes()).is_ok() {
+                            let mut buffer = [0; 1024];
+                            if stream.read(&mut buffer).is_ok() {
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
                     }
                     Err(_) => false,
                 };
@@ -48,7 +54,11 @@ pub fn perform_load_test(config: &Config) -> LoadTestReport {
 
                 let jitter_value = rng.gen_range(0..jitter);
                 let sleep_duration = duration_per_request + Duration::from_millis(jitter_value);
-                thread::sleep(sleep_duration);
+                let elapsed = start_time.elapsed();
+
+                if sleep_duration > elapsed {
+                    thread::sleep(sleep_duration - elapsed);
+                }
             }
         });
 
