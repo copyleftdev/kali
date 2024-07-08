@@ -19,7 +19,7 @@ Kali achieves the desired RPS by:
 The project is organized into several modules, each responsible for a specific aspect of the tool's functionality. Here's an overview of the modules:
 
 ```
-my_project/
+kali/
 ├── src/
 │   ├── lib.rs         # Library entry point
 │   ├── main.rs        # Entry point of the application
