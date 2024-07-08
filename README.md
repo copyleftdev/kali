@@ -1,4 +1,5 @@
 # Kali
+
 ![Kali](logo.png)
 
 Kali is a high-concurrency TCP load testing tool designed to generate a customizable number of requests per second (RPS) to a specified TCP server, while collecting performance metrics and outputting the results in a JSON report. The tool is highly configurable, allowing users to specify various parameters such as host, port, duration, payload, and jitter.
@@ -12,7 +13,7 @@ The name "Kali" is derived from the Hindu goddess Kali, who is associated with d
 Kali achieves the desired RPS by:
 1. **Spawning Multiple Threads**: For each RPS, a separate thread is spawned. This ensures that the load is distributed across multiple threads, allowing for high concurrency.
 2. **Controlled Sleep Duration**: Each thread calculates the sleep duration between requests based on the specified RPS value. This duration is randomized using a jitter value to simulate more realistic network conditions.
-3. **Precise Timing**: By sleeping for the calculated duration, each thread ensures that requests are sent at the desired rate, accounting for any random jitter introduced.
+3. **Precise Timing**: By sleeping for the calculated duration minus the time taken to perform the request, each thread ensures that requests are sent at the desired rate, accounting for any random jitter introduced.
 
 ## Project Structure
 
@@ -121,6 +122,3 @@ To add a new report format:
 - **Documentation**: Document new modules and features thoroughly to help future contributors understand the code and make further enhancements.
 - **Testing**: Ensure that any new code or features added are accompanied by unit and/or integration tests. This ensures that the codebase remains reliable and maintainable.
 
----
-
-Kali is a powerful tool for load testing TCP servers, designed with flexibility and performance in mind. We welcome contributions and feedback from the community to make Kali even more robust and versatile.
