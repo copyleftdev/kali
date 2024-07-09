@@ -2,7 +2,6 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rand::rngs::OsRng;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha12Rng;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
@@ -13,7 +12,7 @@ use crate::metrics::{LoadTestReport, RequestMetrics};
 use crate::config::Config;
 
 pub async fn perform_load_test(config: &Config) -> LoadTestReport {
-    let requests = Arc::new(Mutex::new(HashMap::new()));
+    let requests = Arc::new(Mutex::new(Vec::new()));
     let semaphore = Arc::new(Semaphore::new(config.rps as usize));
 
     let duration_per_request = Duration::from_secs_f64(1.0 / config.rps as f64);
@@ -75,8 +74,8 @@ pub async fn perform_load_test(config: &Config) -> LoadTestReport {
             let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 
             let mut requests = requests.lock().await;
-            let entry = requests.entry(selected_host.clone()).or_insert_with(Vec::new);
-            entry.push(RequestMetrics {
+            requests.push(RequestMetrics {
+                host: selected_host.clone(),
                 response_time,
                 success,
                 timestamp,
@@ -101,24 +100,11 @@ pub async fn perform_load_test(config: &Config) -> LoadTestReport {
     progress_bar.finish_with_message("Load test completed!");
 
     let requests = Arc::try_unwrap(requests).ok().unwrap().into_inner();
-    let report = generate_final_report(&requests, config);
-
-    report
-}
-
-fn generate_final_report(requests: &HashMap<String, Vec<RequestMetrics>>, config: &Config) -> LoadTestReport {
-    let mut all_requests = Vec::new();
-
-    for (host, metrics) in requests {
-        all_requests.extend(metrics.iter().cloned());
-    }
 
     LoadTestReport {
-        host: config.host.clone().unwrap_or_default(),
-        port: config.port,
+        metrics: requests,
         duration: config.duration,
         rps: config.rps,
         load_test_type: config.load_test_type.clone(),
-        requests: all_requests,
     }
 }
