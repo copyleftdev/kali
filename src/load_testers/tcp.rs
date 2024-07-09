@@ -1,3 +1,4 @@
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::io::{Write, Read};
@@ -5,7 +6,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use rand::Rng;
-use rand::rngs::ThreadRng;
 use crate::metrics::{RequestMetrics, LoadTestReport};
 use crate::config::Config;
 
@@ -26,11 +26,19 @@ pub fn perform_load_test(config: &Config) -> LoadTestReport {
 
     let total_bias: u32 = hosts_and_biases.values().sum();
 
+    let total_requests = (config.duration * config.rps as u64) as u64;
+    let progress_bar = ProgressBar::new(total_requests);
+    progress_bar.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({percent}%)")
+        .expect("Failed to set progress bar template")
+        .progress_chars("#>-"));
+
     for (host, bias) in hosts_and_biases {
         let host_requests = Arc::clone(&requests);
         let port = config.port;
         let payload = config.payload.clone();
         let jitter = config.jitter;
+        let progress_bar = progress_bar.clone();
 
         let handle = thread::spawn(move || {
             let mut rng = rand::thread_rng();
@@ -68,6 +76,8 @@ pub fn perform_load_test(config: &Config) -> LoadTestReport {
                     timestamp,
                 });
 
+                progress_bar.inc(1);
+
                 let jitter_value = rng.gen_range(0..jitter);
                 let sleep_duration = duration_per_request + Duration::from_millis(jitter_value);
                 let elapsed = start_time.elapsed();
@@ -83,6 +93,8 @@ pub fn perform_load_test(config: &Config) -> LoadTestReport {
     for handle in handles {
         handle.join().unwrap();
     }
+
+    progress_bar.finish_with_message("Load test completed!");
 
     let requests = Arc::try_unwrap(requests).unwrap().into_inner().unwrap();
 
