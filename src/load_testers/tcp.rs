@@ -1,28 +1,33 @@
+use std::collections::HashMap;
 use std::net::TcpStream;
 use std::io::{Write, Read};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use rand::Rng;
+use rand::rngs::ThreadRng;
 use crate::metrics::{RequestMetrics, LoadTestReport};
 use crate::config::Config;
 
 pub fn perform_load_test(config: &Config) -> LoadTestReport {
     let end_time = Instant::now() + Duration::from_secs(config.duration);
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let success_count = Arc::new(AtomicUsize::new(0));
-    let fail_count = Arc::new(AtomicUsize::new(0));
-    let total_jitter = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(HashMap::new()));
     let mut handles = vec![];
 
     let duration_per_request = Duration::from_millis(1000 / config.rps as u64);
 
-    for _ in 0..config.rps {
-        let requests = Arc::clone(&requests);
-        let success_count = Arc::clone(&success_count);
-        let fail_count = Arc::clone(&fail_count);
-        let total_jitter = Arc::clone(&total_jitter);
-        let host = config.host.clone();
+    let hosts_and_biases = if let Some(ref hosts_and_biases) = config.hosts_and_biases {
+        hosts_and_biases.clone()
+    } else {
+        let mut map = HashMap::new();
+        map.insert(config.host.clone().unwrap(), 100);
+        map
+    };
+
+    let total_bias: u32 = hosts_and_biases.values().sum();
+
+    for (host, bias) in hosts_and_biases {
+        let host_requests = Arc::clone(&requests);
         let port = config.port;
         let payload = config.payload.clone();
         let jitter = config.jitter;
@@ -30,6 +35,11 @@ pub fn perform_load_test(config: &Config) -> LoadTestReport {
         let handle = thread::spawn(move || {
             let mut rng = rand::thread_rng();
             while Instant::now() < end_time {
+                let random_value = rng.gen_range(0..total_bias);
+                if random_value >= bias {
+                    continue;
+                }
+
                 let start_time = Instant::now();
                 let success = match TcpStream::connect((&host as &str, port)) {
                     Ok(mut stream) => {
@@ -48,40 +58,22 @@ pub fn perform_load_test(config: &Config) -> LoadTestReport {
                 };
                 let response_time = start_time.elapsed().as_micros() as u64;
 
-                // Capture the current system time as a UNIX timestamp
                 let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 
-                let mut requests = requests.lock().unwrap();
-                requests.push(RequestMetrics {
+                let mut host_requests = host_requests.lock().unwrap();
+                let entry = host_requests.entry(host.clone()).or_insert_with(Vec::new);
+                entry.push(RequestMetrics {
                     response_time,
                     success,
                     timestamp,
                 });
 
-                // Update counters
-                if success {
-                    success_count.fetch_add(1, Ordering::SeqCst);
-                } else {
-                    fail_count.fetch_add(1, Ordering::SeqCst);
-                }
-
-                // Calculate jitter
                 let jitter_value = rng.gen_range(0..jitter);
-                total_jitter.fetch_add(jitter_value as usize, Ordering::SeqCst);
-
-                // Print the status of each request with emojis and jitter
                 let sleep_duration = duration_per_request + Duration::from_millis(jitter_value);
                 let elapsed = start_time.elapsed();
-
                 if sleep_duration > elapsed {
                     thread::sleep(sleep_duration - elapsed);
                 }
-
-                // Update the static log output
-                let total_requests = success_count.load(Ordering::SeqCst) + fail_count.load(Ordering::SeqCst);
-                let average_jitter = total_jitter.load(Ordering::SeqCst) as f64 / total_requests as f64;
-                print!("\rTotal Requests: {} | Successful: {} ✅ | Failed: {} ❌ | Average Jitter: {:.2} ms", total_requests, success_count.load(Ordering::SeqCst), fail_count.load(Ordering::SeqCst), average_jitter);
-                let _ = std::io::stdout().flush();
             }
         });
 
@@ -94,30 +86,28 @@ pub fn perform_load_test(config: &Config) -> LoadTestReport {
 
     let requests = Arc::try_unwrap(requests).unwrap().into_inner().unwrap();
 
-    // Generate and print the final report
     let report = generate_final_report(&requests, config);
     println!("\n{}", report);
 
     LoadTestReport {
-        host: config.host.clone(),
+        host: config.host.clone().unwrap_or_default(),
         port: config.port,
         duration: config.duration,
         rps: config.rps,
         load_test_type: config.load_test_type.clone(),
-        requests,
+        requests: requests.into_iter().flat_map(|(_, v)| v).collect(),
     }
 }
 
-fn generate_final_report(requests: &[RequestMetrics], config: &Config) -> String {
-    let total_requests = requests.len();
-    let successful_requests = requests.iter().filter(|r| r.success).count();
+fn generate_final_report(requests: &HashMap<String, Vec<RequestMetrics>>, config: &Config) -> String {
+    let total_requests: usize = requests.values().map(|v| v.len()).sum();
+    let successful_requests: usize = requests.values().map(|v| v.iter().filter(|r| r.success).count()).sum();
     let failed_requests = total_requests - successful_requests;
-    let average_response_time: f64 = requests.iter().map(|r| r.response_time).sum::<u64>() as f64 / total_requests as f64;
+    let average_response_time: f64 = requests.values().flat_map(|v| v.iter().map(|r| r.response_time)).sum::<u64>() as f64 / total_requests as f64;
 
-    format!(
+    let mut report = format!(
         "\n==================== 📝 Final Report ====================\n\
         📅 Duration: {} seconds\n\
-        🏷️ Host: {}\n\
         🚪 Port: {}\n\
         🔄 Requests per Second (RPS): {}\n\
         📦 Payload: {}\n\
@@ -128,9 +118,27 @@ fn generate_final_report(requests: &[RequestMetrics], config: &Config) -> String
         - Successful Requests: **{}** ✅\n\
         - Failed Requests: **{}** ❌\n\
         - Average Response Time: **{:.2}** μs\n\
-        \n\
-        ==========================================================",
-        config.duration, config.host, config.port, config.rps, config.payload, config.load_test_type,
+        \n",
+        config.duration, config.port, config.rps, config.payload, config.load_test_type,
         total_requests, successful_requests, failed_requests, average_response_time
-    )
+    );
+
+    for (host, metrics) in requests {
+        let host_total_requests = metrics.len();
+        let host_successful_requests = metrics.iter().filter(|r| r.success).count();
+        let host_failed_requests = host_total_requests - host_successful_requests;
+        let host_average_response_time: f64 = metrics.iter().map(|r| r.response_time).sum::<u64>() as f64 / host_total_requests as f64;
+
+        report.push_str(&format!(
+            "\n📍 **Host: {}**\n\
+            - Total Requests: **{}**\n\
+            - Successful Requests: **{}** ✅\n\
+            - Failed Requests: **{}** ❌\n\
+            - Average Response Time: **{:.2}** μs\n",
+            host, host_total_requests, host_successful_requests, host_failed_requests, host_average_response_time
+        ));
+    }
+
+    report.push_str("\n==========================================================");
+    report
 }

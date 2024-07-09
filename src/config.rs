@@ -1,11 +1,16 @@
-use clap::Parser;
+use clap::{Parser, ArgGroup};
+use std::collections::HashMap;
 
 #[derive(Parser, Debug, PartialEq)]
 #[command(author, version, about, long_about = None)]
 #[command(disable_help_flag = true)]
+#[command(group(ArgGroup::new("hosts").required(true).args(&["host", "hosts_and_biases"])))]
 pub struct Config {
     #[arg(short = 'H', long)]
-    pub host: String,
+    pub host: Option<String>,
+
+    #[arg(long, value_parser=parse_hosts_and_biases, value_name="HOST1:BIAS1,HOST2:BIAS2")]
+    pub hosts_and_biases: Option<HashMap<String, u32>>,
 
     #[arg(short = 'p', long)]
     pub port: u16,
@@ -32,6 +37,20 @@ pub struct Config {
     pub help: Option<bool>,
 }
 
+fn parse_hosts_and_biases(s: &str) -> Result<HashMap<String, u32>, String> {
+    let mut map = HashMap::new();
+    for pair in s.split(',') {
+        let parts: Vec<&str> = pair.split(':').collect();
+        if parts.len() != 2 {
+            return Err(format!("Invalid host:bias pair: {}", pair));
+        }
+        let host = parts[0].to_string();
+        let bias: u32 = parts[1].parse().map_err(|_| format!("Invalid bias value: {}", parts[1]))?;
+        map.insert(host, bias);
+    }
+    Ok(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::Config;
@@ -41,7 +60,7 @@ mod tests {
     fn test_config_parsing() {
         let args = vec![
             "kali",
-            "--host", "127.0.0.1",
+            "--hosts-and-biases", "127.0.0.1:70,192.168.1.1:30",
             "--port", "8080",
             "--duration", "10",
             "--rps", "100",
@@ -51,7 +70,11 @@ mod tests {
             "--jitter", "100",
         ];
         let config = Config::parse_from(args);
-        assert_eq!(config.host, "127.0.0.1");
+        let mut expected_hosts_and_biases = HashMap::new();
+        expected_hosts_and_biases.insert("127.0.0.1".to_string(), 70);
+        expected_hosts_and_biases.insert("192.168.1.1".to_string(), 30);
+        
+        assert_eq!(config.hosts_and_biases, Some(expected_hosts_and_biases));
         assert_eq!(config.port, 8080);
         assert_eq!(config.duration, 10);
         assert_eq!(config.rps, 100);
