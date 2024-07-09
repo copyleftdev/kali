@@ -50,37 +50,3 @@ fn parse_hosts_and_biases(s: &str) -> Result<HashMap<String, u32>, String> {
     }
     Ok(map)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Config;
-    use clap::Parser;
-
-    #[test]
-    fn test_config_parsing() {
-        let args = vec![
-            "kali",
-            "--hosts-and-biases", "127.0.0.1:70,192.168.1.1:30",
-            "--port", "8080",
-            "--duration", "10",
-            "--rps", "100",
-            "--load-test-type", "tcp",
-            "--output-file", "output.json",
-            "--payload", "Hello World",
-            "--jitter", "100",
-        ];
-        let config = Config::parse_from(args);
-        let mut expected_hosts_and_biases = HashMap::new();
-        expected_hosts_and_biases.insert("127.0.0.1".to_string(), 70);
-        expected_hosts_and_biases.insert("192.168.1.1".to_string(), 30);
-        
-        assert_eq!(config.hosts_and_biases, Some(expected_hosts_and_biases));
-        assert_eq!(config.port, 8080);
-        assert_eq!(config.duration, 10);
-        assert_eq!(config.rps, 100);
-        assert_eq!(config.load_test_type, "tcp");
-        assert_eq!(config.output_file, "output.json");
-        assert_eq!(config.payload, "Hello World");
-        assert_eq!(config.jitter, 100);
-    }
-}

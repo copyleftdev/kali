@@ -1,6 +1,6 @@
 use serde::{Serialize};
 
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, Debug, PartialEq, Clone)]  // Added Clone here
 pub struct RequestMetrics {
     pub response_time: u64,
     pub success: bool,

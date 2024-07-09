@@ -1,105 +1,117 @@
 use indicatif::{ProgressBar, ProgressStyle};
+use rand::rngs::OsRng;
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha12Rng;
 use std::collections::HashMap;
-use std::net::TcpStream;
-use std::io::{Write, Read};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use rand::Rng;
-use crate::metrics::{RequestMetrics, LoadTestReport};
+use tokio::net::TcpStream;
+use tokio::sync::{Mutex, Semaphore};
+use tokio::time::sleep;
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use crate::metrics::{LoadTestReport, RequestMetrics};
 use crate::config::Config;
 
-pub fn perform_load_test(config: &Config) -> LoadTestReport {
-    let end_time = Instant::now() + Duration::from_secs(config.duration);
+pub async fn perform_load_test(config: &Config) -> LoadTestReport {
     let requests = Arc::new(Mutex::new(HashMap::new()));
-    let mut handles = vec![];
+    let semaphore = Arc::new(Semaphore::new(config.rps as usize));
 
-    let duration_per_request = Duration::from_millis(1000 / config.rps as u64);
-
-    let hosts_and_biases = if let Some(ref hosts_and_biases) = config.hosts_and_biases {
-        hosts_and_biases.clone()
-    } else {
-        let mut map = HashMap::new();
-        map.insert(config.host.clone().unwrap(), 100);
-        map
-    };
-
-    let total_bias: u32 = hosts_and_biases.values().sum();
-
-    let total_requests = (config.duration * config.rps as u64) as u64;
-    let progress_bar = ProgressBar::new(total_requests);
+    let duration_per_request = Duration::from_secs_f64(1.0 / config.rps as f64);
+    let progress_bar = ProgressBar::new((config.duration * config.rps as u64) as u64);
     progress_bar.set_style(ProgressStyle::default_bar()
         .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({percent}%)")
         .expect("Failed to set progress bar template")
         .progress_chars("#>-"));
 
-    for (host, bias) in hosts_and_biases {
-        let host_requests = Arc::clone(&requests);
+    let mut tasks = vec![];
+
+    let total_bias: u32 = config.hosts_and_biases.as_ref().map_or(100, |hb| hb.values().sum());
+
+    for _ in 0..config.duration * config.rps as u64 {
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let requests = Arc::clone(&requests);
+        let progress_bar = progress_bar.clone();
+        let hosts_and_biases = config.hosts_and_biases.clone();
+        let host = config.host.clone();
         let port = config.port;
         let payload = config.payload.clone();
         let jitter = config.jitter;
-        let progress_bar = progress_bar.clone();
+        let start_time = Instant::now();
 
-        let handle = thread::spawn(move || {
-            let mut rng = rand::thread_rng();
-            while Instant::now() < end_time {
+        tasks.push(tokio::spawn(async move {
+            let mut rng = ChaCha12Rng::from_rng(OsRng).unwrap(); // Thread-safe RNG
+            let selected_host = if let Some(hb) = hosts_and_biases {
+                let mut selected = None;
+                let mut cumulative_bias = 0;
                 let random_value = rng.gen_range(0..total_bias);
-                if random_value >= bias {
-                    continue;
+                for (host, &bias) in &hb {
+                    cumulative_bias += bias;
+                    if random_value < cumulative_bias {
+                        selected = Some(host.clone());
+                        break;
+                    }
                 }
+                selected.unwrap_or_else(|| host.clone().unwrap())
+            } else {
+                host.clone().unwrap()
+            };
 
-                let start_time = Instant::now();
-                let success = match TcpStream::connect((&host as &str, port)) {
-                    Ok(mut stream) => {
-                        if stream.write_all(payload.as_bytes()).is_ok() {
-                            let mut buffer = [0; 1024];
-                            if stream.read(&mut buffer).is_ok() {
-                                true
-                            } else {
-                                false
-                            }
+            let success = match TcpStream::connect((selected_host.as_str(), port)).await {
+                Ok(mut stream) => {
+                    if stream.write_all(payload.as_bytes()).await.is_ok() {
+                        let mut buffer = [0; 1024];
+                        if stream.read(&mut buffer).await.is_ok() {
+                            true
                         } else {
                             false
                         }
+                    } else {
+                        false
                     }
-                    Err(_) => false,
-                };
-                let response_time = start_time.elapsed().as_micros() as u64;
-
-                let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-
-                let mut host_requests = host_requests.lock().unwrap();
-                let entry = host_requests.entry(host.clone()).or_insert_with(Vec::new);
-                entry.push(RequestMetrics {
-                    response_time,
-                    success,
-                    timestamp,
-                });
-
-                progress_bar.inc(1);
-
-                let jitter_value = rng.gen_range(0..jitter);
-                let sleep_duration = duration_per_request + Duration::from_millis(jitter_value);
-                let elapsed = start_time.elapsed();
-                if sleep_duration > elapsed {
-                    thread::sleep(sleep_duration - elapsed);
                 }
-            }
-        });
+                Err(_) => false,
+            };
+            let response_time = start_time.elapsed().as_micros() as u64;
+            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 
-        handles.push(handle);
+            let mut requests = requests.lock().await;
+            let entry = requests.entry(selected_host.clone()).or_insert_with(Vec::new);
+            entry.push(RequestMetrics {
+                response_time,
+                success,
+                timestamp,
+            });
+
+            progress_bar.inc(1);
+
+            drop(permit);
+            let jitter_value = rng.gen_range(0..jitter);
+            let elapsed = start_time.elapsed();
+            let sleep_duration = duration_per_request + Duration::from_millis(jitter_value);
+            if sleep_duration > elapsed {
+                sleep(sleep_duration - elapsed).await;
+            }
+        }));
     }
 
-    for handle in handles {
-        handle.join().unwrap();
+    for task in tasks {
+        task.await.unwrap();
     }
 
     progress_bar.finish_with_message("Load test completed!");
 
-    let requests = Arc::try_unwrap(requests).unwrap().into_inner().unwrap();
-
+    let requests = Arc::try_unwrap(requests).ok().unwrap().into_inner();
     let report = generate_final_report(&requests, config);
-    println!("\n{}", report);
+
+    report
+}
+
+fn generate_final_report(requests: &HashMap<String, Vec<RequestMetrics>>, config: &Config) -> LoadTestReport {
+    let mut all_requests = Vec::new();
+
+    for (host, metrics) in requests {
+        all_requests.extend(metrics.iter().cloned());
+    }
 
     LoadTestReport {
         host: config.host.clone().unwrap_or_default(),
@@ -107,50 +119,6 @@ pub fn perform_load_test(config: &Config) -> LoadTestReport {
         duration: config.duration,
         rps: config.rps,
         load_test_type: config.load_test_type.clone(),
-        requests: requests.into_iter().flat_map(|(_, v)| v).collect(),
+        requests: all_requests,
     }
-}
-
-fn generate_final_report(requests: &HashMap<String, Vec<RequestMetrics>>, config: &Config) -> String {
-    let total_requests: usize = requests.values().map(|v| v.len()).sum();
-    let successful_requests: usize = requests.values().map(|v| v.iter().filter(|r| r.success).count()).sum();
-    let failed_requests = total_requests - successful_requests;
-    let average_response_time: f64 = requests.values().flat_map(|v| v.iter().map(|r| r.response_time)).sum::<u64>() as f64 / total_requests as f64;
-
-    let mut report = format!(
-        "\n==================== 📝 Final Report ====================\n\
-        📅 Duration: {} seconds\n\
-        🚪 Port: {}\n\
-        🔄 Requests per Second (RPS): {}\n\
-        📦 Payload: {}\n\
-        🌐 Load Test Type: {}\n\
-        \n\
-        📊 **Metrics**:\n\
-        - Total Requests: **{}**\n\
-        - Successful Requests: **{}** ✅\n\
-        - Failed Requests: **{}** ❌\n\
-        - Average Response Time: **{:.2}** μs\n\
-        \n",
-        config.duration, config.port, config.rps, config.payload, config.load_test_type,
-        total_requests, successful_requests, failed_requests, average_response_time
-    );
-
-    for (host, metrics) in requests {
-        let host_total_requests = metrics.len();
-        let host_successful_requests = metrics.iter().filter(|r| r.success).count();
-        let host_failed_requests = host_total_requests - host_successful_requests;
-        let host_average_response_time: f64 = metrics.iter().map(|r| r.response_time).sum::<u64>() as f64 / host_total_requests as f64;
-
-        report.push_str(&format!(
-            "\n📍 **Host: {}**\n\
-            - Total Requests: **{}**\n\
-            - Successful Requests: **{}** ✅\n\
-            - Failed Requests: **{}** ❌\n\
-            - Average Response Time: **{:.2}** μs\n",
-            host, host_total_requests, host_successful_requests, host_failed_requests, host_average_response_time
-        ));
-    }
-
-    report.push_str("\n==========================================================");
-    report
 }
