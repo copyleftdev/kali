@@ -1,136 +1,110 @@
-use std::net::TcpStream;
-use std::io::{Write, Read};
+use indicatif::{ProgressBar, ProgressStyle};
+use rand::rngs::OsRng;
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha12Rng;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
-use std::thread;
-use rand::Rng;
-use crate::metrics::{RequestMetrics, LoadTestReport};
+use tokio::net::TcpStream;
+use tokio::sync::{Mutex, Semaphore};
+use tokio::time::sleep;
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use crate::metrics::{LoadTestReport, RequestMetrics};
 use crate::config::Config;
 
-pub fn perform_load_test(config: &Config) -> LoadTestReport {
-    let end_time = Instant::now() + Duration::from_secs(config.duration);
+pub async fn perform_load_test(config: &Config) -> LoadTestReport {
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let success_count = Arc::new(AtomicUsize::new(0));
-    let fail_count = Arc::new(AtomicUsize::new(0));
-    let total_jitter = Arc::new(AtomicUsize::new(0));
-    let mut handles = vec![];
+    let semaphore = Arc::new(Semaphore::new(config.rps as usize));
 
-    let duration_per_request = Duration::from_millis(1000 / config.rps as u64);
+    let duration_per_request = Duration::from_secs_f64(1.0 / config.rps as f64);
+    let progress_bar = ProgressBar::new((config.duration * config.rps as u64) as u64);
+    progress_bar.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({percent}%)")
+        .expect("Failed to set progress bar template")
+        .progress_chars("#>-"));
 
-    for _ in 0..config.rps {
+    let mut tasks = vec![];
+
+    let total_bias: u32 = config.hosts_and_biases.as_ref().map_or(100, |hb| hb.values().sum());
+
+    for _ in 0..config.duration * config.rps as u64 {
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
         let requests = Arc::clone(&requests);
-        let success_count = Arc::clone(&success_count);
-        let fail_count = Arc::clone(&fail_count);
-        let total_jitter = Arc::clone(&total_jitter);
+        let progress_bar = progress_bar.clone();
+        let hosts_and_biases = config.hosts_and_biases.clone();
         let host = config.host.clone();
         let port = config.port;
         let payload = config.payload.clone();
         let jitter = config.jitter;
+        let start_time = Instant::now();
 
-        let handle = thread::spawn(move || {
-            let mut rng = rand::thread_rng();
-            while Instant::now() < end_time {
-                let start_time = Instant::now();
-                let success = match TcpStream::connect((&host as &str, port)) {
-                    Ok(mut stream) => {
-                        if stream.write_all(payload.as_bytes()).is_ok() {
-                            let mut buffer = [0; 1024];
-                            if stream.read(&mut buffer).is_ok() {
-                                true
-                            } else {
-                                false
-                            }
+        tasks.push(tokio::spawn(async move {
+            let mut rng = ChaCha12Rng::from_rng(OsRng).unwrap(); // Thread-safe RNG
+            let selected_host = if let Some(hb) = hosts_and_biases {
+                let mut selected = None;
+                let mut cumulative_bias = 0;
+                let random_value = rng.gen_range(0..total_bias);
+                for (host, &bias) in &hb {
+                    cumulative_bias += bias;
+                    if random_value < cumulative_bias {
+                        selected = Some(host.clone());
+                        break;
+                    }
+                }
+                selected.unwrap_or_else(|| host.clone().unwrap())
+            } else {
+                host.clone().unwrap()
+            };
+
+            let success = match TcpStream::connect((selected_host.as_str(), port)).await {
+                Ok(mut stream) => {
+                    if stream.write_all(payload.as_bytes()).await.is_ok() {
+                        let mut buffer = [0; 1024];
+                        if stream.read(&mut buffer).await.is_ok() {
+                            true
                         } else {
                             false
                         }
+                    } else {
+                        false
                     }
-                    Err(_) => false,
-                };
-                let response_time = start_time.elapsed().as_micros() as u64;
-
-                // Capture the current system time as a UNIX timestamp
-                let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-
-                let mut requests = requests.lock().unwrap();
-                requests.push(RequestMetrics {
-                    response_time,
-                    success,
-                    timestamp,
-                });
-
-                // Update counters
-                if success {
-                    success_count.fetch_add(1, Ordering::SeqCst);
-                } else {
-                    fail_count.fetch_add(1, Ordering::SeqCst);
                 }
+                Err(_) => false,
+            };
+            let response_time = start_time.elapsed().as_micros() as u64;
+            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 
-                // Calculate jitter
-                let jitter_value = rng.gen_range(0..jitter);
-                total_jitter.fetch_add(jitter_value as usize, Ordering::SeqCst);
+            let mut requests = requests.lock().await;
+            requests.push(RequestMetrics {
+                host: selected_host.clone(),
+                response_time,
+                success,
+                timestamp,
+            });
 
-                // Print the status of each request with emojis and jitter
-                let sleep_duration = duration_per_request + Duration::from_millis(jitter_value);
-                let elapsed = start_time.elapsed();
+            progress_bar.inc(1);
 
-                if sleep_duration > elapsed {
-                    thread::sleep(sleep_duration - elapsed);
-                }
-
-                // Update the static log output
-                let total_requests = success_count.load(Ordering::SeqCst) + fail_count.load(Ordering::SeqCst);
-                let average_jitter = total_jitter.load(Ordering::SeqCst) as f64 / total_requests as f64;
-                print!("\rTotal Requests: {} | Successful: {} ✅ | Failed: {} ❌ | Average Jitter: {:.2} ms", total_requests, success_count.load(Ordering::SeqCst), fail_count.load(Ordering::SeqCst), average_jitter);
-                let _ = std::io::stdout().flush();
+            drop(permit);
+            let jitter_value = rng.gen_range(0..jitter);
+            let elapsed = start_time.elapsed();
+            let sleep_duration = duration_per_request + Duration::from_millis(jitter_value);
+            if sleep_duration > elapsed {
+                sleep(sleep_duration - elapsed).await;
             }
-        });
-
-        handles.push(handle);
+        }));
     }
 
-    for handle in handles {
-        handle.join().unwrap();
+    for task in tasks {
+        task.await.unwrap();
     }
 
-    let requests = Arc::try_unwrap(requests).unwrap().into_inner().unwrap();
+    progress_bar.finish_with_message("Load test completed!");
 
-    // Generate and print the final report
-    let report = generate_final_report(&requests, config);
-    println!("\n{}", report);
+    let requests = Arc::try_unwrap(requests).ok().unwrap().into_inner();
 
     LoadTestReport {
-        host: config.host.clone(),
-        port: config.port,
+        metrics: requests,
         duration: config.duration,
         rps: config.rps,
         load_test_type: config.load_test_type.clone(),
-        requests,
     }
-}
-
-fn generate_final_report(requests: &[RequestMetrics], config: &Config) -> String {
-    let total_requests = requests.len();
-    let successful_requests = requests.iter().filter(|r| r.success).count();
-    let failed_requests = total_requests - successful_requests;
-    let average_response_time: f64 = requests.iter().map(|r| r.response_time).sum::<u64>() as f64 / total_requests as f64;
-
-    format!(
-        "\n==================== 📝 Final Report ====================\n\
-        📅 Duration: {} seconds\n\
-        🏷️ Host: {}\n\
-        🚪 Port: {}\n\
-        🔄 Requests per Second (RPS): {}\n\
-        📦 Payload: {}\n\
-        🌐 Load Test Type: {}\n\
-        \n\
-        📊 **Metrics**:\n\
-        - Total Requests: **{}**\n\
-        - Successful Requests: **{}** ✅\n\
-        - Failed Requests: **{}** ❌\n\
-        - Average Response Time: **{:.2}** μs\n\
-        \n\
-        ==========================================================",
-        config.duration, config.host, config.port, config.rps, config.payload, config.load_test_type,
-        total_requests, successful_requests, failed_requests, average_response_time
-    )
 }
