@@ -39,6 +39,7 @@ pub struct Config {
 
 fn parse_hosts_and_biases(s: &str) -> Result<HashMap<String, u32>, String> {
     let mut map = HashMap::new();
+    let mut total_bias: u64 = 0; // Using u64 to prevent overflow when summing biases
     for pair in s.split(',') {
         let parts: Vec<&str> = pair.split(':').collect();
         if parts.len() != 2 {
@@ -46,6 +47,10 @@ fn parse_hosts_and_biases(s: &str) -> Result<HashMap<String, u32>, String> {
         }
         let host = parts[0].to_string();
         let bias: u32 = parts[1].parse().map_err(|_| format!("Invalid bias value: {}", parts[1]))?;
+        if bias == 0 {
+            return Err(format!("Bias value must be greater than 0: {}", parts[1]));
+        }
+        total_bias = total_bias.checked_add(bias as u64).ok_or("Total bias exceeds allowable limit")?;
         map.insert(host, bias);
     }
     Ok(map)
@@ -83,5 +88,39 @@ mod tests {
         assert_eq!(config.output_file, "output.json");
         assert_eq!(config.payload, "Hello World");
         assert_eq!(config.jitter, 100);
+    }
+
+    #[test]
+    fn test_invalid_bias_parsing() {
+        let args = vec![
+            "kali",
+            "--hosts-and-biases", "127.0.0.1:70,192.168.1.1:0",
+            "--port", "8080",
+            "--duration", "10",
+            "--rps", "100",
+            "--load-test-type", "tcp",
+            "--output-file", "output.json",
+            "--payload", "Hello World",
+            "--jitter", "100",
+        ];
+        let result = Config::try_parse_from(args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bias_overflow_parsing() {
+        let args = vec![
+            "kali",
+            "--hosts-and-biases", "127.0.0.1:4294967295,192.168.1.1:1",
+            "--port", "8080",
+            "--duration", "10",
+            "--rps", "100",
+            "--load-test-type", "tcp",
+            "--output-file", "output.json",
+            "--payload", "Hello World",
+            "--jitter", "100",
+        ];
+        let result = Config::try_parse_from(args);
+        assert!(result.is_err());
     }
 }
