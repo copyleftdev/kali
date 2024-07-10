@@ -84,14 +84,27 @@ kali/
 - `--output-file <OUTPUT_FILE>`: The file where the JSON report will be saved.
 - `--payload <PAYLOAD>`: The payload to be sent with each request.
 - `--jitter <JITTER>`: The maximum jitter (in milliseconds) to be added to the sleep duration between requests (default: 50).
+- `--hosts-and-biases <HOST1:BIAS1,HOST2:BIAS2>`: The hosts and their respective biases for load distribution.
 
-### Example Command
+### Example Commands
+
+#### Single Host
+
+To run the load test on a single host, you can use the following command. This will generate 100 requests per second to the host `192.168.0.109` on port `8080` for a duration of 10 seconds. The payload for each request will be "Hello World", and the results will be saved in `output_single.json`.
 
 ```bash
-cargo run -- --host 192.168.0.109 --port 8080 --duration 10 --rps 100 --load-test-type tcp --output-file output.json --payload "Hello World" --jitter 100
+cargo run -- --host 192.168.0.109 --port 8080 --duration 10 --rps 100 --load-test-type tcp --output-file output_single.json --payload "Hello World" --jitter 100
 ```
 
-## Running Tests
+#### Multi-Host with Bias
+
+To run the load test across multiple hosts with specified biases, you can use the following command. This will generate 100 requests per second, distributed between the hosts `192.168.0.109` and `192.168.1.1` based on their biases (70% of the requests to `192.168.0.109` and 30% to `192.168.1.1`). The results will be saved in `output_multi.json`.
+
+```bash
+cargo run -- --hosts-and-biases "192.168.0.109:70,192.168.1.1:30" --port 8080 --duration 10 --rps 100 --load-test-type tcp --output-file output_multi.json --payload "Hello World" --jitter 100
+```
+
+### Running Tests
 
 To run the unit tests and integration tests, use the following command:
 
@@ -121,4 +134,3 @@ To add a new report format:
 - **Clear Interfaces**: Define clear interfaces for new load testers and report formats to ensure they can be easily integrated with the existing codebase.
 - **Documentation**: Document new modules and features thoroughly to help future contributors understand the code and make further enhancements.
 - **Testing**: Ensure that any new code or features added are accompanied by unit and/or integration tests. This ensures that the codebase remains reliable and maintainable.
-
