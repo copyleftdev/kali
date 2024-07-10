@@ -55,6 +55,7 @@ fn parse_hosts_and_biases(s: &str) -> Result<HashMap<String, u32>, String> {
 mod tests {
     use super::Config;
     use clap::Parser;
+    use std::collections::HashMap;
 
     #[test]
     fn test_config_parsing() {

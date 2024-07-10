@@ -1,6 +1,6 @@
-use serde::{Serialize};
+use serde::{Serialize, Deserialize}; // Added Deserialize
 
-#[derive(Serialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)] // Added Deserialize and Clone traits
 pub struct RequestMetrics {
     pub host: String,
     pub response_time: u64,
@@ -8,7 +8,7 @@ pub struct RequestMetrics {
     pub timestamp: u64,
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)] // Added Deserialize and Clone traits
 pub struct LoadTestReport {
     pub metrics: Vec<RequestMetrics>,
     pub duration: u64,
