@@ -40,6 +40,8 @@ pub struct Config {
 fn parse_hosts_and_biases(s: &str) -> Result<HashMap<String, u32>, String> {
     let mut map = HashMap::new();
     let mut total_bias: u64 = 0; // Using u64 to prevent overflow when summing biases
+    const MAX_BIAS: u64 = u32::MAX as u64;
+
     for pair in s.split(',') {
         let parts: Vec<&str> = pair.split(':').collect();
         if parts.len() != 2 {
@@ -50,11 +52,18 @@ fn parse_hosts_and_biases(s: &str) -> Result<HashMap<String, u32>, String> {
         if bias == 0 {
             return Err(format!("Bias value must be greater than 0: {}", parts[1]));
         }
-        total_bias = total_bias.checked_add(bias as u64).ok_or("Total bias exceeds allowable limit")?;
+
+        total_bias = total_bias.checked_add(bias as u64).ok_or_else(|| "Total bias exceeds allowable limit".to_string())?;
+        if total_bias > MAX_BIAS {
+            return Err("Total bias exceeds allowable limit".to_string());
+        }
+
         map.insert(host, bias);
     }
+
     Ok(map)
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -106,12 +115,11 @@ mod tests {
         let result = Config::try_parse_from(args);
         assert!(result.is_err());
     }
-
     #[test]
     fn test_bias_overflow_parsing() {
         let args = vec![
             "kali",
-            "--hosts-and-biases", "127.0.0.1:4294967295,192.168.1.1:1",
+            "--hosts-and-biases", "127.0.0.1:4294967295,192.168.1.1:2",
             "--port", "8080",
             "--duration", "10",
             "--rps", "100",
@@ -123,4 +131,5 @@ mod tests {
         let result = Config::try_parse_from(args);
         assert!(result.is_err());
     }
+    
 }
